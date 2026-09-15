@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 260">
+  <rect width="200" height="260" fill="#FFF7ED"/>
+  <rect x="70" y="40" width="60" height="180" rx="8" fill="#ffffff" stroke="#E2E8F0" stroke-width="3"/>
+  <rect x="82" y="60" width="36" height="14" rx="3" fill="#F5841F"/>
+  <line x1="82" y1="90" x2="118" y2="90" stroke="#CBD5E1" stroke-width="2"/>
+  <line x1="82" y1="100" x2="118" y2="100" stroke="#CBD5E1" stroke-width="2"/>
+  <line x1="82" y1="110" x2="105" y2="110" stroke="#CBD5E1" stroke-width="2"/>
+  <text x="100" y="235" font-family="Arial, sans-serif" font-size="12" fill="#94A3B8" text-anchor="middle">Örnek görsel — gerçek ürün fotoğrafı ile değiştirin</text>
+</svg>
