@@ -640,10 +640,6 @@ function ProductCard({ product, delay, onAdd, onQuickView, isLoggedIn, onRequire
 /* ---------- auth modal ---------- */
 
 const REGISTERED_EMAILS = ["test@alpeptide.com", "demo@alpeptide.com"];
-const FAKE_ACCOUNTS = [
-  { username: "testuser", email: "test@alpeptide.com", password: "Guvenli!9" },
-  { username: "demo", email: "demo@alpeptide.com", password: "Demo!2024" },
-];
 const REGISTERED_USERNAMES = ["testuser", "demo"];
 
 function hasSequentialDigits(str) {
@@ -693,7 +689,8 @@ function isValidEmailFormat(email) {
 }
 
 // brute-force escalation ladder — shared by the login/register email-code step
-const BAN_LADDER_MS = [5 * 60 * 1000, 30 * 60 * 1000, 60 * 60 * 1000, 6 * 60 * 60 * 1000];
+// 1) hata → ban yok  2) hata → ban yok  3) 5 dk  4) 20 dk  5) zorunlu mail onaylı hesap kurtarma
+const BAN_LADDER_MS = [0, 0, 5 * 60 * 1000, 20 * 60 * 1000];
 
 const ADDRESS_TYPES = [
   { key: "Ev", icon: Home },
@@ -2075,6 +2072,389 @@ function AccordionItem({ icon: Icon, title, subtitle, open, onToggle, children }
   );
 }
 
+const ORDER_STATUS_OPTIONS = [
+  { key: "pending", label: "Beklemede" },
+  { key: "payment_review", label: "Ödeme Onaylanıyor" },
+  { key: "payment_confirmed", label: "Ödeme Onaylandı" },
+  { key: "preparing", label: "Hazırlanıyor" },
+  { key: "shipped", label: "Kargolandı" },
+  { key: "delivered", label: "Teslim Edildi" },
+  { key: "flagged", label: "İncelemede" },
+];
+
+function AdminTabs({ active, setActive }) {
+  const tabs = [
+    { key: "orders", label: "Siparişler", icon: Package },
+    { key: "tickets", label: "Ticketlar", icon: Ticket },
+    { key: "products", label: "Ürünler", icon: FlaskConical },
+    { key: "coupons", label: "Kuponlar", icon: Tag },
+    { key: "users", label: "Kullanıcılar", icon: User },
+  ];
+  return (
+    <div className="mb-6 flex gap-1.5 overflow-x-auto border-b border-slate-200 pb-px">
+      {tabs.map((t) => (
+        <button
+          key={t.key}
+          onClick={() => setActive(t.key)}
+          className={`flex shrink-0 items-center gap-1.5 border-b-2 px-3.5 py-2.5 text-sm font-medium transition-colors ${active === t.key ? "border-orange-500 text-orange-600" : "border-transparent text-slate-500 hover:text-slate-800"}`}
+        >
+          <t.icon size={15} /> {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AdminOrdersTab({ pushToast }) {
+  const [orders, setOrders] = useState(null);
+  const [error, setError] = useState("");
+
+  async function load() {
+    try {
+      const data = await apiRequest("/admin/orders", null, { method: "GET", token: loadToken() });
+      setOrders(data);
+    } catch (err) {
+      setError(err.message || "Siparişler yüklenemedi.");
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function updateStatus(id, status) {
+    try {
+      await apiRequest(`/admin/orders/${id}/status`, { status }, { token: loadToken() });
+      pushToast("Sipariş durumu güncellendi.");
+      load();
+    } catch (err) {
+      pushToast(err.message || "Güncellenemedi.");
+    }
+  }
+
+  if (error) return <p className="text-sm text-red-600">{error}</p>;
+  if (!orders) return <p className="text-sm text-slate-400">Yükleniyor...</p>;
+  if (orders.length === 0) return <p className="text-sm text-slate-400">Henüz sipariş yok.</p>;
+
+  return (
+    <div className="space-y-2">
+      {orders.map((o) => (
+        <div key={o.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 p-3">
+          <div className="min-w-[110px]">
+            <p className="text-sm font-semibold text-slate-800">{o.order_number}</p>
+            <p className="text-xs text-slate-400">{new Date(o.created_at).toLocaleString("tr-TR")}</p>
+          </div>
+          <p className="min-w-[90px] text-sm font-medium text-slate-700">{Number(o.subtotal).toLocaleString("tr-TR", { minimumFractionDigits: 2 })} TL</p>
+          <p className="flex-1 truncate text-xs text-slate-400">{Array.isArray(o.items) ? o.items.map((i) => `${i.name} x${i.qty}`).join(", ") : ""}</p>
+          <select
+            value={o.status}
+            onChange={(e) => updateStatus(o.id, e.target.value)}
+            className="rounded-md border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-orange-500"
+          >
+            {ORDER_STATUS_OPTIONS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </select>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AdminTicketsTab({ pushToast }) {
+  const [tickets, setTickets] = useState(null);
+  const [active, setActive] = useState(null); // full ticket + messages
+  const [reply, setReply] = useState("");
+  const [error, setError] = useState("");
+
+  async function load() {
+    try {
+      const data = await apiRequest("/admin/tickets", null, { method: "GET", token: loadToken() });
+      setTickets(data);
+    } catch (err) {
+      setError(err.message || "Ticketlar yüklenemedi.");
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function openTicket(id) {
+    try {
+      const data = await apiRequest(`/admin/tickets/${id}`, null, { method: "GET", token: loadToken() });
+      setActive(data);
+    } catch (err) {
+      pushToast(err.message || "Ticket açılamadı.");
+    }
+  }
+
+  async function sendReply() {
+    if (!reply.trim()) return;
+    try {
+      await apiRequest(`/admin/tickets/${active.id}/reply`, { message: reply.trim() }, { token: loadToken() });
+      setReply("");
+      openTicket(active.id);
+      load();
+      pushToast("Yanıt gönderildi.");
+    } catch (err) {
+      pushToast(err.message || "Gönderilemedi.");
+    }
+  }
+
+  if (error) return <p className="text-sm text-red-600">{error}</p>;
+
+  if (active) {
+    return (
+      <div>
+        <button onClick={() => setActive(null)} className="mb-3 flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-orange-600"><ChevronLeft size={14} /> Ticketlara dön</button>
+        <p className="mb-1 text-sm font-semibold text-slate-800">{active.ticket_number} — {active.subject}</p>
+        <p className="mb-4 text-xs text-slate-400">{active.email}</p>
+        <div className="mb-4 space-y-2.5">
+          {active.messages.map((m) => (
+            <div key={m.id} className={`max-w-[85%] rounded-lg p-3 text-sm ${m.from_role === "user" ? "bg-slate-100 text-slate-700" : "ml-auto bg-orange-50 text-slate-700"}`}>
+              <p className="mb-0.5 text-[10px] font-semibold uppercase text-slate-400">{m.from_role === "user" ? "Müşteri" : "Destek"}</p>
+              {m.body}
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input value={reply} onChange={(e) => setReply(e.target.value)} placeholder="Yanıtınızı yazın..." className="flex-1 rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-500" />
+          <button onClick={sendReply} className="rounded-md bg-orange-500 px-4 py-2 text-xs font-semibold text-white hover:bg-orange-600">Gönder</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!tickets) return <p className="text-sm text-slate-400">Yükleniyor...</p>;
+  if (tickets.length === 0) return <p className="text-sm text-slate-400">Henüz ticket yok.</p>;
+
+  return (
+    <div className="space-y-2">
+      {tickets.map((t) => (
+        <button key={t.id} onClick={() => openTicket(t.id)} className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 p-3 text-left hover:border-orange-300">
+          <div>
+            <p className="text-sm font-semibold text-slate-800">{t.ticket_number} — {t.subject}</p>
+            <p className="text-xs text-slate-400">{t.username} · {t.email}</p>
+          </div>
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">{t.status}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AdminProductsTab({ pushToast }) {
+  const [products, setProducts] = useState(null);
+  const [form, setForm] = useState(null); // null | {} (new) | {...} (edit)
+  const [error, setError] = useState("");
+
+  async function load() {
+    try {
+      const data = await apiRequest("/products?pageSize=50", null, { method: "GET" });
+      setProducts(data.items);
+    } catch (err) {
+      setError(err.message || "Ürünler yüklenemedi.");
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function save() {
+    if (!form.name?.trim() || !form.price) { pushToast("Ürün adı ve fiyat zorunludur."); return; }
+    try {
+      const payload = { name: form.name, description: form.description || "", price: Number(form.price), category: form.category || "", form: form.form_ || "", purpose: form.purpose || "", color: form.color || "#F5841F", stockStatus: form.stock_status || "in", isFeatured: !!form.is_featured };
+      if (form.id) {
+        await apiRequest(`/admin/products/${form.id}`, payload, { method: "PUT", token: loadToken() });
+      } else {
+        await apiRequest("/admin/products", { ...payload, sku: form.sku || `ALP-${Date.now()}` }, { token: loadToken() });
+      }
+      setForm(null);
+      load();
+      pushToast("Ürün kaydedildi.");
+    } catch (err) {
+      pushToast(err.message || "Kaydedilemedi.");
+    }
+  }
+
+  async function remove(id) {
+    try {
+      await apiRequest(`/admin/products/${id}`, null, { method: "DELETE", token: loadToken() });
+      load();
+      pushToast("Ürün silindi.");
+    } catch (err) {
+      pushToast(err.message || "Silinemedi.");
+    }
+  }
+
+  if (error) return <p className="text-sm text-red-600">{error}</p>;
+
+  return (
+    <div>
+      <button onClick={() => setForm({})} className="mb-4 flex items-center gap-1.5 rounded-md bg-orange-500 px-3.5 py-2 text-xs font-semibold text-white hover:bg-orange-600"><Plus size={14} /> Yeni Ürün</button>
+
+      {form && (
+        <div className="mb-4 space-y-2.5 rounded-lg border border-orange-200 bg-orange-50/40 p-4">
+          <div className="grid grid-cols-2 gap-2.5">
+            <input value={form.name || ""} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Ürün adı" className="rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-500" />
+            <input value={form.price || ""} onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))} placeholder="Fiyat (örn. 1500)" type="number" className="rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-500" />
+          </div>
+          <input value={form.category || ""} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} placeholder="Kategori" className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-500" />
+          <textarea value={form.description || ""} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="Açıklama" rows={2} className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-500" />
+          <div className="flex gap-2">
+            <button onClick={save} className="rounded-md bg-orange-500 px-4 py-2 text-xs font-semibold text-white hover:bg-orange-600">Kaydet</button>
+            <button onClick={() => setForm(null)} className="rounded-md border border-slate-200 px-4 py-2 text-xs font-medium text-slate-600">Vazgeç</button>
+          </div>
+        </div>
+      )}
+
+      {!products ? (
+        <p className="text-sm text-slate-400">Yükleniyor...</p>
+      ) : products.length === 0 ? (
+        <p className="text-sm text-slate-400">Henüz ürün eklenmemiş.</p>
+      ) : (
+        <div className="space-y-2">
+          {products.map((p) => (
+            <div key={p.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 p-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-800">{p.name}</p>
+                <p className="text-xs text-slate-400">{p.category} — {Number(p.price).toLocaleString("tr-TR")} TL</p>
+              </div>
+              <div className="flex gap-1">
+                <button onClick={() => setForm(p)} className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-orange-600" aria-label="Düzenle"><Pencil size={14} /></button>
+                <button onClick={() => remove(p.id)} className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-rose-500" aria-label="Sil"><Trash2 size={14} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminCouponsTab({ pushToast }) {
+  const [coupons, setCoupons] = useState(null);
+  const [form, setForm] = useState(null);
+  const [error, setError] = useState("");
+
+  async function load() {
+    try {
+      const data = await apiRequest("/admin/coupons", null, { method: "GET", token: loadToken() });
+      setCoupons(data);
+    } catch (err) {
+      setError(err.message || "Kuponlar yüklenemedi.");
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function create() {
+    if (!form.code?.trim() || !form.discountRate) { pushToast("Kod ve indirim oranı zorunludur."); return; }
+    try {
+      await apiRequest("/admin/coupons", { code: form.code.trim(), discountRate: Number(form.discountRate) / 100 }, { token: loadToken() });
+      setForm(null);
+      load();
+      pushToast("Kupon oluşturuldu.");
+    } catch (err) {
+      pushToast(err.message || "Oluşturulamadı.");
+    }
+  }
+
+  async function toggleActive(c) {
+    try {
+      await apiRequest(`/admin/coupons/${c.id}`, { active: !c.active }, { method: "PATCH", token: loadToken() });
+      load();
+    } catch (err) {
+      pushToast(err.message || "Güncellenemedi.");
+    }
+  }
+
+  async function remove(id) {
+    try {
+      await apiRequest(`/admin/coupons/${id}`, null, { method: "DELETE", token: loadToken() });
+      load();
+      pushToast("Kupon silindi.");
+    } catch (err) {
+      pushToast(err.message || "Silinemedi.");
+    }
+  }
+
+  if (error) return <p className="text-sm text-red-600">{error}</p>;
+
+  return (
+    <div>
+      <button onClick={() => setForm({})} className="mb-4 flex items-center gap-1.5 rounded-md bg-orange-500 px-3.5 py-2 text-xs font-semibold text-white hover:bg-orange-600"><Plus size={14} /> Yeni Kupon</button>
+
+      {form && (
+        <div className="mb-4 flex flex-wrap items-end gap-2.5 rounded-lg border border-orange-200 bg-orange-50/40 p-4">
+          <input value={form.code || ""} onChange={(e) => setForm((f) => ({ ...f, code: e.target.value.toUpperCase() }))} placeholder="KOD10" className="rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-500" />
+          <input value={form.discountRate || ""} onChange={(e) => setForm((f) => ({ ...f, discountRate: e.target.value }))} placeholder="İndirim %" type="number" className="w-28 rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-500" />
+          <button onClick={create} className="rounded-md bg-orange-500 px-4 py-2 text-xs font-semibold text-white hover:bg-orange-600">Oluştur</button>
+          <button onClick={() => setForm(null)} className="rounded-md border border-slate-200 px-4 py-2 text-xs font-medium text-slate-600">Vazgeç</button>
+        </div>
+      )}
+
+      {!coupons ? (
+        <p className="text-sm text-slate-400">Yükleniyor...</p>
+      ) : coupons.length === 0 ? (
+        <p className="text-sm text-slate-400">Henüz kupon yok.</p>
+      ) : (
+        <div className="space-y-2">
+          {coupons.map((c) => (
+            <div key={c.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 p-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-800">{c.code}</p>
+                <p className="text-xs text-slate-400">%{Math.round(Number(c.discount_rate) * 100)} indirim — {c.used_count} kez kullanıldı</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => toggleActive(c)} className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${c.active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{c.active ? "Aktif" : "Kapalı"}</button>
+                <button onClick={() => remove(c.id)} className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-rose-500" aria-label="Sil"><Trash2 size={14} /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminUsersTab() {
+  const [users, setUsers] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    apiRequest("/admin/users", null, { method: "GET", token: loadToken() })
+      .then(setUsers)
+      .catch((err) => setError(err.message || "Kullanıcılar yüklenemedi."));
+  }, []);
+
+  if (error) return <p className="text-sm text-red-600">{error}</p>;
+  if (!users) return <p className="text-sm text-slate-400">Yükleniyor...</p>;
+
+  return (
+    <div className="space-y-2">
+      {users.map((u) => (
+        <div key={u.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 p-3">
+          <div>
+            <p className="text-sm font-semibold text-slate-800">{u.full_name} <span className="text-slate-400">@{u.username}</span></p>
+            <p className="text-xs text-slate-400">{u.email}</p>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            {u.email_verified_at ? <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 size={12} /> Doğrulandı</span> : <span className="text-amber-600">Doğrulanmadı</span>}
+            {u.role === "admin" && <span className="rounded-full bg-orange-100 px-2 py-0.5 font-semibold text-orange-700">Admin</span>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AdminPage({ pushToast }) {
+  const [tab, setTab] = useState("orders");
+  return (
+    <section className="mx-auto max-w-5xl px-4 sm:px-6 py-14">
+      <h1 className="mb-2 text-3xl font-bold text-slate-900">Admin Paneli</h1>
+      <p className="mb-8 text-[15px] text-slate-500">Siparişleri, ticketları, ürünleri ve kuponları buradan yönetin.</p>
+      <AdminTabs active={tab} setActive={setTab} />
+      {tab === "orders" && <AdminOrdersTab pushToast={pushToast} />}
+      {tab === "tickets" && <AdminTicketsTab pushToast={pushToast} />}
+      {tab === "products" && <AdminProductsTab pushToast={pushToast} />}
+      {tab === "coupons" && <AdminCouponsTab pushToast={pushToast} />}
+      {tab === "users" && <AdminUsersTab />}
+    </section>
+  );
+}
+
 function UserPanelPage({ section, setSection, pushToast, favorites, recentlyViewed, onToggleLike, onQuickView, extraOrders, orderHistoryCleared, setOrderHistoryCleared, deletedTicketIds, setDeletedTicketIds, panelTarget, clearPanelTarget }) {
   // consume the deep-link target exactly once — children read it for their initial state,
   // then we clear it so switching tabs away and back doesn't reopen the same item again.
@@ -2657,7 +3037,7 @@ function TicketPanel({ pushToast, requestConfirm, actionsBlocked, deletedIds, se
                 <Package size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <select value={orderId} onChange={(e) => setOrderId(e.target.value)} className="w-full appearance-none rounded-md border border-slate-200 py-2 pl-8 pr-3 text-sm outline-none focus:border-orange-500">
                   <option value="">Sipariş seçin</option>
-                  {[...extraOrders, ...FAKE_ORDERS].filter((o) => o.status !== "delivered").map((o) => (
+                  {extraOrders.filter((o) => o.status !== "delivered").map((o) => (
                     <option key={o.id} value={o.id}>{o.id} — {o.total}</option>
                   ))}
                 </select>
@@ -3105,7 +3485,7 @@ function QuickViewModal({ product, onClose, onAdd, isLoggedIn, onRequireAuth }) 
 
 /* ---------- page ---------- */
 
-export default function App() {
+export default function AlpeptideHomePolished() {
   const [ageVerified, setAgeVerified] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [showTop, setShowTop] = useState(false);
@@ -3121,7 +3501,9 @@ export default function App() {
 
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
-  const suggestions = query ? PRODUCTS.filter((p) => p.name.toLowerCase().includes(query.toLowerCase())).slice(0, 5) : [];
+  const suggestions = query
+    ? [...PRODUCTS, ...SHOP_PRODUCTS].filter((p) => p.name.toLowerCase().includes(query.toLowerCase())).slice(0, 6)
+    : [];
 
   const [cartItems, setCartItems] = useState([{ ...PRODUCTS[0], qty: 1 }, { ...PRODUCTS[3], qty: 1 }]);
   const [cartOpen, setCartOpen] = useState(false);
@@ -3195,6 +3577,9 @@ export default function App() {
     setPanelSection(section);
     setPanelTarget(target);
     setPage("panel");
+  }
+  function goAdmin() {
+    setPage("admin");
   }
   function goStore() {
     setPage("shop");
@@ -3403,9 +3788,7 @@ export default function App() {
       <style>{`
         html, body { overflow-x: hidden; max-width: 100%; }
         * { min-width: 0; }
-        @keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-        .animate-marquee { animation: marquee 42s linear infinite; }
-        .animate-marquee:hover { animation-play-state: paused; }
+        :root { font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
         @keyframes heroFade { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
         .hero-fade { animation: heroFade 0.75s cubic-bezier(0.22,1,0.36,1) both; }
         @keyframes floaty { 0%,100% { transform: translateY(0) rotate(-2deg); } 50% { transform: translateY(-10px) rotate(2deg); } }
@@ -3481,7 +3864,7 @@ export default function App() {
         <header className={`border-b border-slate-200 bg-white transition-shadow duration-300 ${scrolled ? "shadow-sm" : ""}`}>
         <div className={`mx-auto grid max-w-7xl grid-cols-3 items-center px-4 sm:px-6 transition-all duration-300 ${scrolled ? "py-2.5" : "py-4"}`}>
           <div className="relative flex items-center gap-3 justify-self-start">
-            <button onClick={toggleMenu} className="-m-2 p-2 text-slate-600 lg:hidden" aria-label="Menü">{menuOpen ? <X size={22} /> : <Menu size={22} />}</button>
+            <button onClick={toggleMenu} className="-m-2 p-2 text-slate-600 transition-colors hover:text-orange-600" aria-label="Menü">{menuOpen ? <X size={22} /> : <Menu size={22} />}</button>
             <button
               onClick={() => {
                 if (!isLoggedIn) { openAuth("login"); return; }
@@ -3500,6 +3883,9 @@ export default function App() {
                 <button onClick={() => { setAccountMenuOpen(false); goPanel("addresses"); }} className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-orange-50 hover:text-orange-600"><MapPin size={16} /> Adreslerim</button>
                 <button onClick={() => { setAccountMenuOpen(false); goPanel("orders"); }} className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-orange-50 hover:text-orange-600"><Package size={16} /> Siparişlerim</button>
                 <button onClick={() => { setAccountMenuOpen(false); goPanel("ticket"); }} className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-orange-50 hover:text-orange-600"><Ticket size={16} /> Ticket Sistemi</button>
+                {currentUser?.role === "admin" && (
+                  <button onClick={() => { setAccountMenuOpen(false); goAdmin(); }} className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm font-medium text-orange-600 hover:bg-orange-50"><ShieldCheck size={16} /> Admin Paneli</button>
+                )}
                 <div className="my-1 h-px bg-slate-100" />
                 <button
                   onClick={async () => {
@@ -3522,10 +3908,10 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex items-center gap-1.5 justify-self-center">
+          <button onClick={goHome} className="flex items-center gap-1.5 justify-self-center" aria-label="Ana sayfaya git">
             <BrandMark className="h-7 w-7" />
             <span className="text-xl font-bold tracking-tight text-slate-900">alpeptide</span>
-          </div>
+          </button>
 
           <div className="flex items-center gap-6 justify-self-end">
             {isLoggedIn && (
@@ -3579,14 +3965,20 @@ export default function App() {
           <div className="relative mx-auto max-w-7xl px-4 py-2.5 sm:px-6">
             <div className="flex items-center">
               <Search size={16} className="pointer-events-none absolute left-7 text-slate-400 sm:left-9" />
-              <input value={query} onChange={(e) => setQuery(e.target.value)} onFocus={() => setSearchOpen(true)} onBlur={() => setTimeout(() => setSearchOpen(false), 150)} placeholder="Ürün, kategori veya parti numarası ara" className="w-full rounded-md border border-slate-200 bg-slate-50 py-2.5 pl-12 pr-4 text-sm text-slate-700 outline-none transition-colors focus:border-orange-500 focus:bg-white sm:pl-14" />
+              <input value={query} onChange={(e) => setQuery(e.target.value)} onFocus={() => setSearchOpen(true)} onBlur={() => setTimeout(() => setSearchOpen(false), 150)} placeholder="Ürünleri ara" className="w-full rounded-md border border-slate-200 bg-slate-50 py-2.5 pl-12 pr-4 text-sm text-slate-700 outline-none transition-colors focus:border-orange-500 focus:bg-white sm:pl-14" />
             </div>
             {searchOpen && suggestions.length > 0 && (
               <div className="pop-in absolute left-4 right-4 top-full z-20 mt-1.5 overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg sm:left-6 sm:right-6">
                 {suggestions.map((p) => (
-                  <button key={p.id} onMouseDown={() => { setQuery(p.name); setSearchOpen(false); setQuickViewId(p.id); }} className="flex w-full items-center justify-between px-4 py-2.5 text-left text-sm hover:bg-orange-50">
-                    <span className="font-medium text-slate-800">{p.name}</span>
-                    <span className="text-xs text-slate-400">{p.price}</span>
+                  <button key={p.id} onMouseDown={() => { setQuery(p.name); setSearchOpen(false); setQuickViewId(p.id); }} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-orange-50">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md" style={{ backgroundColor: `${p.color}1a` }}>
+                      <FlaskConical size={16} style={{ color: p.color }} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium text-slate-800">{p.name}</span>
+                      <span className="block truncate text-xs text-slate-400">{p.purpose || p.category}</span>
+                    </span>
+                    <span className="shrink-0 text-xs text-slate-400">{p.price}</span>
                   </button>
                 ))}
               </div>
@@ -3594,25 +3986,8 @@ export default function App() {
           </div>
         </div>
 
-        <nav className="mx-auto hidden max-w-7xl items-center gap-7 px-4 sm:px-6 pb-3 lg:flex">
-          {NAV_LINKS.map((link) => {
-            const isActive = (link.label === "Ana Sayfa" && page === "home") || (link.label === "Mağaza" && page === "shop") || (link.label === "Hakkımızda" && page === "about") || (link.label === "SSS" && page === "faq") || (link.label === "Blog" && (page === "blog" || page === "blogPost")) || (link.label === "KVKK" && page === "kvkk");
-            return (
-              <button
-                key={link.label}
-                onClick={() => (link.label === "Ana Sayfa" ? goHome() : link.label === "Mağaza" ? goStore() : link.label === "Hakkımızda" ? goAbout() : link.label === "SSS" ? goFaq() : link.label === "Blog" ? goBlog() : link.label === "KVKK" ? goKvkk() : undefined)}
-                className={`group relative flex items-center gap-1.5 text-sm font-medium transition-colors ${isActive ? "text-orange-600" : "text-slate-500 hover:text-slate-900"}`}
-              >
-                <link.icon size={15} />
-                {link.label}
-                <span className={`absolute -bottom-3 left-0 h-0.5 w-full origin-left bg-orange-500 transition-transform duration-300 ${isActive ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100"}`} />
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className={`overflow-hidden transition-all duration-300 lg:hidden ${menuOpen ? "max-h-96 border-t border-slate-100" : "max-h-0"}`}>
-          <nav className="flex flex-col gap-1 px-4 sm:px-6 py-3">
+        <div className={`overflow-hidden transition-all duration-300 ${menuOpen ? "max-h-96 border-t border-slate-100" : "max-h-0"}`}>
+          <nav className="flex flex-col gap-1 px-4 sm:px-6 py-3 lg:mx-auto lg:max-w-7xl lg:flex-row lg:items-center lg:gap-7 lg:py-3">
             {NAV_LINKS.map((link) => {
               const isActive = (link.label === "Ana Sayfa" && page === "home") || (link.label === "Mağaza" && page === "shop") || (link.label === "Hakkımızda" && page === "about") || (link.label === "SSS" && page === "faq") || (link.label === "Blog" && (page === "blog" || page === "blogPost")) || (link.label === "KVKK" && page === "kvkk");
               return (
@@ -3627,14 +4002,14 @@ export default function App() {
                   else if (link.label === "SSS") goFaq();
                   else if (link.label === "KVKK") goKvkk();
                   }}
-                  className={`flex items-center gap-2 rounded-md px-2 py-2 text-left text-sm font-medium ${isActive ? "bg-orange-50 text-orange-600" : "text-slate-600"}`}
+                  className={`flex items-center gap-2 rounded-md px-2 py-2 text-left text-sm font-medium lg:rounded-none lg:px-0 lg:py-0 ${isActive ? "bg-orange-50 text-orange-600 lg:bg-transparent" : "text-slate-600 lg:text-slate-500 lg:hover:text-slate-900"}`}
                 >
                   <link.icon size={16} />
                   {link.label}
                 </button>
               );
             })}
-            <div className="mt-2 flex gap-2 border-t border-slate-100 pt-3">
+            <div className="mt-2 flex gap-2 border-t border-slate-100 pt-3 lg:hidden">
               <button onClick={() => openAuth("login")} className="flex flex-1 items-center justify-center gap-1.5 rounded-md border border-slate-200 py-2 text-sm font-medium text-slate-700"><LogIn size={15} />Giriş Yap</button>
               <button onClick={() => openAuth("register")} className="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-orange-500 py-2 text-sm font-semibold text-white"><UserPlus size={15} />Kayıt Ol</button>
             </div>
@@ -3643,10 +4018,10 @@ export default function App() {
       </header>
       </div>
 
-      {/* Certification marquee */}
-      <div className="overflow-hidden border-b border-slate-100 bg-orange-50/50 py-3.5">
-        <div className="flex w-max animate-marquee gap-12">
-          {[...CERTIFICATIONS, ...CERTIFICATIONS].map(({ icon: Icon, label }, i) => (
+      {/* Certification strip */}
+      <div className="border-b border-slate-100 bg-orange-50/50 py-3.5">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-center gap-x-8 gap-y-2 px-4 sm:px-6">
+          {CERTIFICATIONS.map(({ icon: Icon, label }, i) => (
             <div key={i} className="flex items-center gap-2 whitespace-nowrap text-[13px] font-bold text-slate-700"><Icon size={15} className="text-orange-500" />{label}</div>
           ))}
         </div>
@@ -3664,7 +4039,7 @@ export default function App() {
           <div className="animate-blob-delay absolute -right-16 top-10 h-64 w-64 rounded-full bg-orange-100/60 blur-3xl" />
         </div>
 
-        <div className="relative grid gap-10 lg:grid-cols-2 lg:items-center">
+        <div className="relative grid gap-14 lg:grid-cols-2 lg:items-center lg:gap-10">
           <div className="hero-fade" style={{ animationDelay: "0.05s" }}>
             <div className="mb-4 flex items-center gap-3">
               <Hiro className="h-14 w-14 animate-floaty" />
@@ -3691,7 +4066,7 @@ export default function App() {
             </div>
 
             <div
-              className="cursor-grab select-none overflow-hidden rounded-xl border border-slate-200 bg-orange-50/40 active:cursor-grabbing"
+              className="relative z-10 cursor-grab select-none overflow-hidden rounded-xl border border-slate-200 bg-white shadow-md active:cursor-grabbing"
               {...batchSwipe}
             >
               <div
@@ -3945,6 +4320,11 @@ export default function App() {
           panelTarget={panelTarget}
           clearPanelTarget={() => setPanelTarget(null)}
         />
+      )}
+      {page === "admin" && (
+        currentUser?.role === "admin"
+          ? <AdminPage pushToast={pushToast} />
+          : <div className="mx-auto max-w-lg px-4 py-24 text-center"><ShieldCheck size={32} className="mx-auto mb-3 text-slate-300" /><p className="text-sm font-medium text-slate-500">Bu sayfayı görüntülemek için admin yetkisine sahip olmanız gerekiyor.</p></div>
       )}
       {page === "crypto-payment" && <CryptoPaymentPage onGoTicket={() => { if (!isLoggedIn) { openAuth("login"); return; } goPanel("ticket"); }} />}
 
